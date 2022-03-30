@@ -1,0 +1,2 @@
+# jdxlib
+DXライブラリ風javascriptライブラリ
