@@ -1,124 +1,273 @@
 /**
  * Copyright (c) 2022 Akira Ikeda (Kamigoe)
  * This software is released under the MIT License, see LICENSE.
+ * jDXLib ver.0.1.0b
  */
 
-var Lib = {
-    //スクリーン(canvas)系
-    jDX_SCREEN_BACK: "back",
-    jDX_SCREEN_FRONT: "front",
+const TRUE = 1;
+const FALSE = 0;
 
-    //ブレンドモード系
-    jDX_BLENDMODE_NOBLEND: "noblend",
-    jDX_BLENDMODE_ALPHA: "alpha"
-};
+/** 
+ * ライブラリで使用する定数類
+ * @readonly
+ * @enum {Number}
+ */
+const jDXC = {
+  // 描画先画面指定用定義
+  /** 表ページ */     jDX_SCREEN_BACK:        0xfffffffe,
+  /** 裏ページ */     jDX_SCREEN_FRONT:       0xfffffffc,
 
-var libBackCanvas;//裏画面
-var libBackContext;//裏画面
-var libMainCanvas;//表画面
-var libMainContext;//表画面
-var libDrawCanvas;//描画対象画面
-var libDrawContext;//描画対象画面
-
-//ライブラリの初期化
-Lib.Lib_Init = function(){
-    libBackCanvas = document.createElement("canvas");
-    libBackContext = libBackCanvas.getContext("2d");
-    libBackCanvas = document.getElementById("mainCanvas");
-    libBackContext = libBackCanvas.getContext("2d");
-    libBackCanvas.width = 640;
-    libBackCanvas.height = 480;
-    libMainCanvas.width = 640;
-    libMainCanvas.height = 480;
-    libDrawCanvas = libMainCanvas;
-    libDrawContext = libMainContext;
+  // 描画ブレンドモード定義
+  /** ノーブレンド */ jDX_BLENDMODE_NOBLEND:  0,
+  /** αブレンド */    jDX_BLENDMODE_ALPHA:    1,
 }
+Object.freeze(jDXC);
 
-//指定時間(ms)スリープ
-Lib.WaitTimer = function(waitMsec) {
-    var startMsec = new Date();
+/** ライブラリ本体 */
+const jDX = (() => {
+  const graphics = {}; // 画像やスクリーンなどのバッファ
 
-    // 指定ミリ秒間、空ループ。CPUは常にビジー。
-    while (new Date() - startMsec < waitMsec);
-}
+  let grCount = 0; // 読み込んだ画像やスクリーンの数
+  let backCanvas = null;// 裏画面
+  let backContext = null;// 裏画面
+  let mainCanvas = null;// 表画面
+  let mainContext = null;// 表画面
+  let currentCanvas = null;// 描画対象画面
+  let currentContext = null;// 描画対象画面
+  let currentDrawMode = jDXC.jDX_BLENDMODE_NOBLEND; // 現在のブレンドモード
+  let currentDrawPal = 255; // 現在のブレンドモードパラメータ
 
-//DrawScreen:描画対象にしたいスクリーン
-Lib.SetDrawScreen = function(DrawScreen){
-    switch(DrawScreen){
-    case Lib.jDX_SCREEN_FRONT:
-        libDrawCanvas = libMainCanvas;
-        libDrawContext = libMainContext;
-        break;
-    case Lib.jDX_SCREEN_BACK:
-        libDrawCanvas = libDrawCanvas;
-        libDrawContext = libBackContext;
-        break;
+  // ライブラリ内で使用する便利関数形 ////////////////////////////////////////////////////
+  const clamp = (min, max, val) => Math.max(min, Math.min(max, val));
+
+  // 使用必須関数 ///////////////////////////////////////////////////////////////////////
+  // ウエイト関係の関数 /////////////////////////////////////////////////////////////////
+  /** 
+   * ライブラリの初期化
+   * @return 成功: 0 / 失敗: -1
+   */
+  const Lib_Init = () => {
+    try {
+      backCanvas = document.createElement("canvas");
+      backContext = backCanvas.getContext("2d");
+      mainCanvas = document.getElementById("mainCanvas");
+      mainContext = backCanvas.getContext("2d");
+      backCanvas.width = 640;
+      backCanvas.height = 480;
+      mainCanvas.width = 640;
+      mainCanvas.height = 480;
+      currentCanvas = mainCanvas;
+      currentContext = mainContext;
+      return 0;
+    } catch(e) {
+      return -1;
     }
-}
+  };
 
-//libLoadImageDir:イメージのあるディレクトリ
-Lib.LoadGraph = function(libLoadImageDir){
-    var libLoadImage = new Image();
-    libLoadImage.src = libLoadImageDir;
-    Lib.WaitTimer(10);
-    return libLoadImage;
-}
-
-//BlendMode:ブレンドモード名
-//Pal:ブレンドモードの適用具合(0 ~ 255)
-Lib.SetDrawBlendMode = function(BlendMode, Pal){
-    switch(BlendMode){
-        case Lib.jDX_BLENDMODE_NOBLEND:
-            libDrawContext.globalAlpha = 1.0;
-            break;
-        case Lib.jDX_BLENDMODE_ALPHA:
-            libDrawContext.globalAlpha = Pal / 255;
-            break;
+  // グラフィックデータ制御関数 //////////////////////////////////////////////////////////
+  /**
+   * グラフィックの拡大縮小描画
+   * @param {Number} x1 矩形左上頂点座標
+   * @param {Number} y1 矩形左上頂点座標
+   * @param {Number} x2 矩形右下頂点座標
+   * @param {Number} y2 矩形右下頂点座標
+   * @param {Number} GrHandle グラフィックハンドル
+   * @param {Number} TransFlag 画像の透明度を有効にするか(現在特に意味なし)
+   * @return 成功: 0 / 失敗: -1
+   */
+  const DrawExtendGraph = (x1, y1, x2, y2, GrHandle, TransFlag) => {
+    try {
+      currentContext.drawImage(graphics[GrHandle], x1, y1, x2 - x1, y2 - y1);
+      return 0;
+    } catch(e) {
+      return -1;
     }
-}
+  };
+  /**
+   * グラフィックの描画
+   * @param {Number} x 左上頂点座標
+   * @param {Number} y 左上頂点座標
+   * @param {Number} GrHandle グラフィックハンドル
+   * @param {Number} TransFlag 画像の透明度を有効にするか(現在特に意味なし)
+   * @return 成功: 0 / 失敗: -1
+   */
+  const DrawGraph = (x, y, GrHandle, TransFlag) => {
+    try {
+      currentContext.drawImage(graphics[GrHandle], x, y);
+      return 0;
+    } catch(e) {
+      return -1;
+    }
+  };
+  /**
+   * グラフィックの回転描画
+   * @param {Number} x 中心座標
+   * @param {Number} y 中心座標
+   * @param {Number} ExtRate 拡大率(1.0で等倍)
+   * @param {Number} Angle 角度(ラジアン指定)
+   * @param {Number} GrHandle グラフィックハンドル
+   * @param {Number} TransFlag 画像の透明度を有効にするか(現在特に意味なし)
+   * @param {Number} TurnFlag 左右反転を行うか
+   * @returns 成功: 0 / 失敗: -1
+   */
+  const DrawRotaGraph = (x, y, ExtRate, Angle, GrHandle, TransFlag, TurnFlag) => {
+    try {
+      const img = graphics[GrHandle];
+      const width = TurnFlag === TRUE ? -img.width : img.width;
+      currentContext.save();
+      currentContext.translate(x, y);
+      currentContext.rotate(Angle);
+      currentContext.drawImage(img, -width * .5 * ExtRate, -img.height * .5 * ExtRate, width * ExtRate, img.height * ExtRate);
+      currentContext.restore();
+      return 0;
+    } catch(e) {
+      return -1;
+    }
+  };
+  /**
+   * [async] 画僧ファイルの読み込み
+   * @param {String} FileName ロードする画像のパス
+   * @return 成功: グラフィックハンドル / 失敗: -1
+   */
+  const LoadGraph = (FileName) => {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const GrHandle = (grCount++);
+        graphics[GrHandle] = img;
+        resolve(GrHandle);
+      };
+      img.onerror = () => reject(-1);
+      img.src = FileName;
+    });
+  };
+  /**
+   * 描画のブレンドモードを設定する
+   * @param {Number} BlendMode ブレンドモード
+   * @param {Number} Pal パラメータ(0 ~ 255)
+   * @return 成功: 0 / 失敗: -1
+   */
+  const SetDrawBlendMode = (BlendMode, Pal) => {
+    try {
+      const mode = BlendMode || currentDrawMode;
+      const pal = clamp(0, 255, Pal || currentDrawPal);
+      switch(BlendMode) {
+        case jDXC.jDX_BLENDMODE_NOBLEND:
+          currentCanvas.globalAlpha = 1.0;
+          break;
+        case jDXC.jDX_BLENDMODE_ALPHA:
+          currentCanvas.globalAlpha = pal / 255;
+          break;
+        default:
+          return -1;
+      }
+      currentDrawMode = mode;
+      currentDrawPal = pal;
+      return 0;
+    } catch(e) {
+      return -1;
+    }
+  };
+  
+  // その他画面操作系関数 ////////////////////////////////////////////////////////////////
+  /**
+   * 画面に描かれたものを消去する
+   * @return 成功: 0 / 失敗: -1
+   */
+  const ClearDrawScreen = () => {
+    try {
+      currentContext.clearRect(0, 0, currentCanvas.width, currentCanvas.height);
+      return 0;
+    } catch(e) {
+      return -1;
+    }
+  };
+  /**
+   * 裏ページを表ページへ反映する
+   * @return 成功: 0 / 失敗: -1
+   */
+  const ScreenFlip = () => {
+    try {
+      mainContext.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+      mainContext.drawImage(backCanvas, 0, 0);
+      return 0;
+    } catch(e) {
+      return -1;
+    }
+  };
+  /**
+   * 描画先グラフィック領域変更
+   * @param {Number} DrawScreen 描画対象のグラフィック領域
+   * @return 成功: 0 / 失敗: -1
+   */
+  const SetDrawScreen = (DrawScreen) => {
+    try {
+      switch(DrawScreen) {
+        case jDXC.jDX_SCREEN_FRONT:
+          currentCanvas = mainCanvas;
+          currentContext = mainContext;
+          break;
+        case jDXC.jDX_SCREEN_BACK:
+          currentCanvas = currentCanvas;
+          currentContext = backContext;
+          break;
+      }
+      SetDrawBlendMode(currentDrawMode, currentDrawPal);
+      return 0;
+    } catch(e) {
+      return -1;
+    }
+  };
+  /**
+   * 画面モードの変更
+   * @param {Number} SizeX 解像度(width)
+   * @param {Number} SizeY 解像度(height)
+   * @param {Number} ColorBitNum カラービット数(現在特に意味なし)
+   * @return 成功: 0 / 失敗: -1
+   */
+  const SetGraphMode = (SizeX, SizeY, ColorBitNum) => {
+    try {
+      backCanvas.width = SizeX;
+      backCanvas.height = SizeY;
+      mainCanvas.width = SizeX;
+      mainContext.height = SizeY;
+      return 0;
+    } catch(e) {
+      return -1;
+    }
+  };
 
-//x, y:描画したい左上の座標
-//GrHandle:グラフィックイメージ
-Lib.DrawGraph = function(x, y, GrHandle){
-    libDrawContext.drawImage(GrHandle, x, y);
-}
+  // ウエイト関係の関数 /////////////////////////////////////////////////////////////////
+  /**
+   * [async] 指定の時間だけ止める
+   * @param {Number} WaitTime 止める時間(ミリ秒単位)
+   * @return 成功: 0 / 失敗: -1
+   */
+  const WaitTimer = (WaitTime) => {
+    return new Promise((resolve, reject) => {
+      try {
+        setTimeout(() => resolve(0), WaitTime);
+      } catch(e) {
+        reject(-1);
+      }
+    });
+  };
 
-//x1, y1:描画したい左上の座標
-//x2, y2:描画したい右下の座標
-//GrHandle:グラフィックイメージ
-Lib.DrawExtendGraph = function(x1, y1, x2, y2, GrHandle){
-    libDrawContext.drawImage(GrHandle, x1, y1, x2 - x1, y2 - y1);
-}
+  return {
+    Lib_Init,
 
-//x, y:描画したい中心座標
-//ExtRate:拡大率
-//Angle:角度(ラジアン)
-//GrHandle:グラフィックイメージ
-Lib.DrawRotaGraph = function(x, y, ExtRate, Angle, GrHandle){
-    libDrawContext.save();
-    libDrawContext.translate(x, y);
-    libDrawContext.rotate(Angle);
-    libDrawContext.drawImage(GrHandle, -GrHandle.width / 2 * ExtRate, -GrHandle.height / 2 * ExtRate, GrHandle.width * ExtRate, GrHandle.height * ExtRate);
-    libDrawContext.restore();  
-}
+    DrawExtendGraph,
+    DrawGraph,
+    DrawRotaGraph,
+    LoadGraph,
+    SetDrawBlendMode,
 
-//スクリーン(キャンバス)サイズの変更
-//SizeX, SizeY:変更したいサイズ
-Lib.SetGraphMode = function(SizeX, SizeY, ColorBitNum){
-    libBackCanvas.width = SizeX;
-    libBackCanvas.height = SizeY;
-    libBackContext = libBackCanvas.getContext("2d");
-    libMainCanvas.width = SizeX;
-    libMainCanvas.height = SizeY;
-    libMainContext = libMainCanvas.getContext("2d");
-}
+    ClearDrawScreen,
+    ScreenFlip,
+    SetDrawScreen,
+    SetGraphMode,
 
-//画面をきれいさっぱりに
-Lib.ClearDrawScreen = function(){
-    libDrawContext.clearRect(0, 0, libDrawCanvas.width, libDrawCanvas.height);
-}
-
-//描画対処画面と表画面の描画内容を入れ替え
-Lib.ScreenFlip = function(){
-    libMainContext.drawImage(libBackCanvas, 0, 0);
-}
+    WaitTimer,
+  };
+})();
+Object.freeze(jDX);
