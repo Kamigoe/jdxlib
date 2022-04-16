@@ -12,6 +12,9 @@ jQuery等が 動的なWebサイトの制作 を意識した作りになってい
 
 　[リファレンスもどき](https://jdxlib.web.app/)を用意しておりますのでこちらをご覧ください
 
+## License
+The source code is licensed MIT, see LICENSE.
+
 <br><br><br>
-<p>色とかフォントサイズとかを変えたくてHTMLで記述していたが、GitHub上だと反映されなかったので泣く泣くMarkdownに戻したorz</p>
-最終更新日時:2022/03/31 03:12:42
+<p>ライセンス表記よくわからん。</p>
+最終更新日時:2022/04/16 14:33:53
